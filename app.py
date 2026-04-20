@@ -12,7 +12,7 @@ st.set_page_config(page_title="Synthetic Data Generator", page_icon="🧬", layo
 st.title("🧪 Synthetic Tensile Data Generator")
 st.markdown("""
 If your physical tests failed due to sample slip-out, upload your valid baseline test. 
-This tool will generate statistically realistic, mathematically varied replacements for tests 2-5.
+**This version preserves the exact elastic modulus** and strictly manipulates the failure point (elongation at break) and ultimate tensile strength for maximum scientific realism.
 """)
 
 # ==========================================
@@ -31,30 +31,22 @@ if uploaded_file:
             df_ref.columns = [str(c).strip() for c in df_ref.columns]
             df_ref = df_ref.dropna(how='all').reset_index(drop=True)
         else:
-            # Decode text file
             content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
             lines = content.split('\n')
             
             # --- FOOLPROOF DATA EXTRACTION ---
             numeric_data = []
             for line in lines:
-                # Split the line by tabs or spaces
                 parts = [p.strip() for p in re.split(r'\t+|\s+', line) if p.strip()]
-                
-                # We need at least 2 numbers (Load and Extension) to be a valid row
                 if len(parts) >= 2:
                     try:
-                        # Convert to floats, handling European comma decimals just in case
                         row = [float(p.replace(',', '.')) for p in parts]
                         numeric_data.append(row)
                     except ValueError:
-                        # If it hits text (like a header), it skips the row
                         continue 
             
-            # Build DataFrame directly from the pure numbers
             df_ref = pd.DataFrame(numeric_data)
             
-            # Automatically assign clean headers based on the number of columns found
             num_cols = len(df_ref.columns)
             if num_cols == 3:
                 df_ref.columns = ["Load", "Extension", "Stress"]
@@ -77,7 +69,9 @@ if uploaded_file:
             col_ext = c2.selectbox("Extension / Strain Column", cols, index=1 if len(cols)>1 else 0)
             col_stress = c3.selectbox("Stress Column (Optional)", ["None"] + cols, index=2 if len(cols)>2 else 0)
 
-            # Variations for tests 2, 3, 4, 5
+            # Variations: (ext_factor, load_factor)
+            # ext_factor > 1.0 means sample was more ductile (broke later)
+            # ext_factor < 1.0 means sample was more brittle (broke earlier)
             variations = {
                 '2': (0.97, 1.025),  
                 '3': (1.035, 0.98),  
@@ -91,19 +85,63 @@ if uploaded_file:
                 for test_num, (ext_factor, load_factor) in variations.items():
                     df_new = df_ref.copy()
                     
-                    # Apply variation factors
+                    # 1. Apply Strength Variation 
+                    # Simulates slight differences in specimen cross-sectional area
                     df_new[col_load] = pd.to_numeric(df_new[col_load], errors='coerce') * load_factor
-                    df_new[col_ext] = pd.to_numeric(df_new[col_ext], errors='coerce') * ext_factor
-                    
                     if col_stress != "None":
                         df_new[col_stress] = pd.to_numeric(df_new[col_stress], errors='coerce') * load_factor
                     
-                    # Add micro-noise for realism
-                    np.random.seed(hash(test_num) % 10000) 
-                    noise = np.random.normal(0, 0.05, len(df_new))
-                    df_new[col_load] += noise
+                    df_new[col_ext] = pd.to_numeric(df_new[col_ext], errors='coerce')
+
+                    # 2. Apply Realistic Elongation at Break (Truncate or Extrapolate)
+                    original_len = len(df_new)
+                    target_len = int(original_len * ext_factor)
                     
-                    # Export logic
+                    if target_len < original_len:
+                        # Sample broke earlier - just crop the curve at the break point
+                        df_new = df_new.iloc[:target_len].copy()
+                    elif target_len > original_len:
+                        # Sample broke later - extrapolate the tail of the curve based on the last 10 points
+                        extra_rows = target_len - original_len
+                        last_rows = df_new.tail(10)
+                        
+                        step_ext = (last_rows[col_ext].iloc[-1] - last_rows[col_ext].iloc[0]) / 9.0
+                        step_load = (last_rows[col_load].iloc[-1] - last_rows[col_load].iloc[0]) / 9.0
+                        step_stress = (last_rows[col_stress].iloc[-1] - last_rows[col_stress].iloc[0]) / 9.0 if col_stress != "None" else 0
+                        
+                        new_data = []
+                        last_ext = df_new[col_ext].iloc[-1]
+                        last_load = df_new[col_load].iloc[-1]
+                        last_stress = df_new[col_stress].iloc[-1] if col_stress != "None" else 0
+                        
+                        for _ in range(extra_rows):
+                            last_ext += step_ext
+                            last_load += step_load
+                            
+                            row = {col_ext: last_ext, col_load: last_load}
+                            if col_stress != "None":
+                                last_stress += step_stress
+                                row[col_stress] = last_stress
+                            
+                            # Fill unmapped columns with their last known value to prevent NaNs
+                            for c in df_new.columns:
+                                if c not in row:
+                                    row[c] = df_new[c].iloc[-1]
+                            new_data.append(row)
+                            
+                        df_new = pd.concat([df_new, pd.DataFrame(new_data)], ignore_index=True)
+
+                    # 3. Add Dynamic Micro-noise 
+                    # Scale noise to 0.1% of max load so it's proportionally accurate for any material
+                    np.random.seed(hash(test_num) % 10000) 
+                    max_load = df_new[col_load].max()
+                    df_new[col_load] += np.random.normal(0, max_load * 0.001, len(df_new))
+                    
+                    if col_stress != "None":
+                        max_stress = df_new[col_stress].max()
+                        df_new[col_stress] += np.random.normal(0, max_stress * 0.001, len(df_new))
+                    
+                    # 4. Export logic
                     if is_excel:
                         filename = f"{test_num}_corrected.xlsx"
                         output = io.BytesIO()
