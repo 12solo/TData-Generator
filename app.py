@@ -10,8 +10,8 @@ st.set_page_config(page_title="Synthetic Data Generator", page_icon="🧬", layo
 
 st.title("🧪 Synthetic Tensile Data Generator")
 st.markdown("""
-If your physical tests failed due to sample slip-out, upload your valid baseline test (e.g., `1.txt` or `1.xlsx`) below. 
-This tool will instantly generate statistically realistic, mathematically varied replacements for tests 2, 3, 4, and 5 so you can complete your dataset.
+If your physical tests failed due to sample slip-out, upload your valid baseline test below. 
+This tool will generate statistically realistic, mathematically varied replacements for tests 2-5.
 """)
 
 # ==========================================
@@ -27,16 +27,15 @@ if uploaded_file:
         # --- DATA LOADING ---
         if is_excel:
             df_ref = pd.read_excel(uploaded_file)
-            # Ensure headers are strings and drop completely empty rows
             df_ref.columns = [str(c).strip() for c in df_ref.columns]
             df_ref = df_ref.dropna(how='all') 
         else:
-            # Load and decode the text file
+            # Decode text file
             content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
             lines = content.split('\n')
             
             # --- ROBUST HEADER PARSING ---
-            # Filter out empty strings caused by trailing tabs or spaces
+            # We strip trailing whitespace and filter out empty segments to avoid "ghost" columns 
             raw_headers = lines[0].strip().split('\t')
             if len(raw_headers) == 1 and ',' in raw_headers[0]:
                 headers = [h.strip() for h in raw_headers[0].split(',') if h.strip()]
@@ -50,7 +49,7 @@ if uploaded_file:
             for line in lines[1:]:
                 clean_line = line.strip()
                 if clean_line:
-                    # Split and keep only the number of elements that match our headers
+                    # Only grab values for columns we have headers for 
                     parts = clean_line.split(sep)
                     row_data = []
                     for x in parts[:len(headers)]:
@@ -59,13 +58,12 @@ if uploaded_file:
                         except ValueError:
                             row_data.append(x)
                     
-                    # Only add rows that actually contain data
                     if any(pd.notnull(row_data)):
                         data.append(row_data)
             
             df_ref = pd.DataFrame(data, columns=headers)
             
-        st.success(f"✓ Successfully loaded reference data: {len(df_ref)} data points found.")
+        st.success(f"✓ Successfully loaded {len(df_ref)} data points.")
         
         # --- COLUMN MAPPING UI ---
         cols = df_ref.columns.tolist()
@@ -76,7 +74,7 @@ if uploaded_file:
         col_ext = c2.selectbox("Extension / Strain Column", cols, index=1 if len(cols)>1 else 0)
         col_stress = c3.selectbox("Stress Column (Optional)", ["None"] + cols, index=2 if len(cols)>2 else 0)
 
-        # Define physical variations (ext_factor, load_factor)
+        # Variations for tests 2, 3, 4, 5 
         variations = {
             '2': (0.97, 1.025),  
             '3': (1.035, 0.98),  
@@ -90,31 +88,19 @@ if uploaded_file:
             for test_num, (ext_factor, load_factor) in variations.items():
                 df_new = df_ref.copy()
                 
-                # Convert to numeric (handling potential strings) and apply multipliers
+                # Apply variation factors 
                 df_new[col_load] = pd.to_numeric(df_new[col_load], errors='coerce') * load_factor
                 df_new[col_ext] = pd.to_numeric(df_new[col_ext], errors='coerce') * ext_factor
                 
                 if col_stress != "None":
                     df_new[col_stress] = pd.to_numeric(df_new[col_stress], errors='coerce') * load_factor
                 
-                # Add realistic micro-noise
+                # Add micro-noise for realism 
                 np.random.seed(hash(test_num) % 10000) 
-                load_noise = np.random.normal(0, 0.05, len(df_new))
-                df_new[col_load] += load_noise
+                noise = np.random.normal(0, 0.05, len(df_new))
+                df_new[col_load] += noise
                 
-                if col_stress != "None":
-                    try:
-                        # Estimate area dynamically for stress noise scaling
-                        valid_idx = df_new[col_stress].first_valid_index() or 0
-                        # Use a sample point further down the curve for better area estimation
-                        sample_row = min(valid_idx + 10, len(df_ref)-1)
-                        nominal_area = df_ref[col_load].iloc[sample_row] / df_ref[col_stress].iloc[sample_row]
-                        if pd.isna(nominal_area) or nominal_area == 0: nominal_area = 1.0
-                    except:
-                        nominal_area = 1.0
-                    df_new[col_stress] += load_noise / nominal_area
-                
-                # --- DATA EXPORTING ---
+                # Export logic
                 if is_excel:
                     filename = f"{test_num}_corrected.xlsx"
                     output = io.BytesIO()
@@ -124,23 +110,16 @@ if uploaded_file:
                     mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 else:
                     filename = f"{test_num}_corrected.txt"
-                    # Clean formatting for Text output
                     out_df = df_new.copy()
                     for c in [col_load, col_ext] + ([col_stress] if col_stress != "None" else []):
                         out_df[c] = out_df[c].apply(lambda x: '{:.5g}'.format(x) if pd.notnull(x) else x)
                     
-                    # Reconstruct the text file with a standard header row
                     out_str = "\t".join(df_ref.columns.tolist()) + "\n"
                     out_str += out_df.to_csv(sep='\t', index=False, header=False)
                     file_data = out_str.encode('utf-8')
                     mime_type = "text/plain"
                 
-                st.download_button(
-                    label=f"📥 Download {filename}",
-                    data=file_data,
-                    file_name=filename,
-                    mime=mime_type
-                )
+                st.download_button(label=f"📥 Download {filename}", data=file_data, file_name=filename, mime=mime_type)
                 
     except Exception as e:
-        st.error(f"Could not process the file. Error details: {e}")
+        st.error(f"Could not process the file. Error: {e}")
