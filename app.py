@@ -76,7 +76,7 @@ if uploaded_file:
                 '2': (0.97, 1.025),  
                 '3': (1.035, 0.98),  
                 '4': (0.99, 1.01),   
-                '5': (0.955, 1.03)   
+                '5': (1.50, 1.09)   
             }
             
             if st.button("⚙️ Generate Corrected Files", type="primary", use_container_width=True):
